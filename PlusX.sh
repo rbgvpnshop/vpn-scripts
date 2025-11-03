@@ -12,9 +12,10 @@
 set -Eeuo pipefail
 
 #====================[ ปรับค่าได้ ]====================
-LICENSE_BASE="${LICENSE_BASE:-https://license.yourdomain.com/licenses}"
-PUBKEY_URL="${PUBKEY_URL:-https://raw.githubusercontent.com/rbgvpnshop/vpn-scripts/main/license_pub.pem}"
+LICENSE_BASE="https://thwed-key.bnetray.online/licenses"
+PUBKEY_URL="https://thwed-key.bnetray.online/license_pub.pem"
 LEGACY_BIN="${LEGACY_BIN:-/usr/local/bin/plusx_legacy.sh}"
+
 
 # OVPN / PKI
 OVPN_ENV="${OVPN_ENV:-/etc/plusx/ovpn.env}"

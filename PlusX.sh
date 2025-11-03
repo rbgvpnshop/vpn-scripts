@@ -58,37 +58,102 @@ is_root(){ [[ $EUID -eq 0 ]]; }
 pause(){ read -rp "กด Enter เพื่อกลับเมนู..."; }
 
 #====================[ LICENSE ]========================
-download_pubkey(){ [[ -s "$PUBKEY_PATH" ]] || { curl -fsSL "$PUBKEY_URL" -o "$PUBKEY_PATH"; chmod 644 "$PUBKEY_PATH"; }; }
+download_pubkey(){
+  [[ -s "$PUBKEY_PATH" ]] || {
+    curl -fsSL "$PUBKEY_URL" -o "$PUBKEY_PATH"
+    chmod 644 "$PUBKEY_PATH"
+  }
+}
+
 ask_key(){
-  local cur=""; [[ -s "$CACHE_TOKEN" ]] && cur=$(jq -r '.key // empty' "$CACHE_TOKEN" 2>/dev/null || true)
-  if [[ -n "$cur" ]]; then read -rp "พบคีย์เดิม: $cur ใช้ต่อ? [Y/n]: " a; [[ "${a,,}" =~ ^n ]] && cur=""; fi
+  local cur=""
+  [[ -s "$CACHE_TOKEN" ]] && cur=$(jq -r '.key // empty' "$CACHE_TOKEN" 2>/dev/null || true)
+  if [[ -n "$cur" ]]; then
+    read -rp "พบคีย์เดิม: $cur ใช้ต่อ? [Y/n]: " a
+    [[ "${a,,}" =~ ^n ]] && cur=""
+  fi
   [[ -n "$cur" ]] && KEY="$cur" || read -rp "ใส่คีย์เพื่อใช้งานสคริปต์: " KEY
 }
-fetch_and_verify(){
-  echo "[+] ตรวจคีย์กับเซิร์ฟเวอร์ลิขสิทธิ์..."
-  local doc; doc=$(curl -fsSL --max-time 8 "$LICENSE_BASE/$KEY.lic" || true)
-  [[ -n "$doc" ]] || { echo "❌ ไม่พบคีย์บนเซิร์ฟเวอร์"; exit 1; }
-  local pay_b64 sig_b64; pay_b64=$(jq -r '.payload // empty' <<<"$doc"); sig_b64=$(jq -r '.sig // empty' <<<"$doc")
-  [[ -n "$pay_b64" && -n "$sig_b64" ]] || { echo "❌ โทเค็นไม่ถูกต้อง"; exit 1; }
-  printf %s "$pay_b64" | base64 -d > "$PAYLOAD_JSON"
-  printf %s "$sig_b64" | base64 -d > "$PAYLOAD_SIG"
-  if ! openssl dgst -sha256 -verify "$PUBKEY_PATH" -signature "$PAYLOAD_SIG" "$PAYLOAD_JSON" >/dev/null 2>&1; then echo "❌ ลายเซ็นไม่ผ่าน"; exit 1; fi
-  local L_KEY L_IP L_EXP L_MAX NOW MYIP
-  L_KEY=$(jq -r '.key' "$PAYLOAD_JSON"); L_IP=$(jq -r '.ip' "$PAYLOAD_JSON"); L_EXP=$(jq -r '.exp' "$PAYLOAD_JSON"); L_MAX=$(jq -r '.max // 2500' "$PAYLOAD_JSON")
-  NOW=$(date +%s); MYIP=$(sysip)
-  [[ "$L_KEY" == "$KEY" ]] || { echo "❌ คีย์ไม่ตรง"; exit 1; }
-  (( NOW <= L_EXP )) || { echo "❌ คีย์หมดอายุแล้ว"; exit 1; }
-  [[ "$L_IP" == "$MYIP" ]] || { echo "❌ IP เครื่อง ($MYIP) ไม่ตรงกับใบอนุญาต ($L_IP)"; exit 1; }
-  jq -n --arg key "$L_KEY" --arg ip "$L_IP" --argjson exp "$L_EXP" --argjson max "$L_MAX" '{key:$key, ip:$ip, exp:$exp, max:$max}' > "$CACHE_TOKEN"
-  export LICENSED_MAX="$L_MAX"
-  echo "✅ คีย์ถูกต้อง (หมดอายุ: $(date -d @${L_EXP} +%F))  IP: $L_IP  Max: $L_MAX"
+
+# สร้าง JSON แบบ canonical แล้ว “ไม่มี newline ท้ายไฟล์”
+canon_out(){
+  # stdin เป็น JSON อ็อบเจ็กต์
+  local out="$1"
+  printf '%s' "$(jq -cS .)"
 }
-read_cached_license(){ if [[ -s "$CACHE_TOKEN" ]]; then L_KEY=$(jq -r '.key' "$CACHE_TOKEN" 2>/dev/null || echo "-"); L_EXP=$(jq -r '.exp' "$CACHE_TOKEN" 2>/dev/null || echo "0"); L_MAX=$(jq -r '.max // 2500' "$CACHE_TOKEN" 2>/dev/null || echo "2500"); else L_KEY="-" ; L_EXP=0 ; L_MAX=2500 ; fi; }
+
+fetch_and_verify(){
+  download_pubkey
+  echo "[+] ตรวจคีย์กับเซิร์ฟเวอร์ลิขสิทธิ์..."
+
+  local BASE doc payload_b64 sig_b64
+  BASE="${LICENSE_BASE%/}"
+  doc="$(curl -fsSL --max-time 10 "$BASE/$KEY.lic" || true)"
+  [[ -n "$doc" ]] || { echo "❌ ไม่พบคีย์บนเซิร์ฟเวอร์ ($BASE/$KEY.lic)"; exit 1; }
+
+  # รูปแบบที่ 1: { "payload": "<base64>", "sig": "<base64>" }
+  payload_b64="$(jq -r '.payload // empty' <<<"$doc")"
+  sig_b64="$(jq -r '.sig // empty'      <<<"$doc")"
+
+  if [[ -n "$payload_b64" ]]; then
+    # ถ้ามี payload มาเป็น base64 ก็ถอดลงไฟล์ตรง ๆ
+    printf %s "$payload_b64" | base64 -d > "$PAYLOAD_JSON"
+  else
+    # รูปแบบที่ 2: {id,n,ip,note,exp,sig} → ลบ sig แล้วทำ canonical
+    jq 'del(.sig)' <<<"$doc" | canon_out "$PAYLOAD_JSON" > "$PAYLOAD_JSON"
+  fi
+
+  # เซ็นทุกแบบใช้ base64 → ไบนารี
+  printf %s "$sig_b64" | base64 -d > "$PAYLOAD_SIG" 2>/dev/null \
+    || { echo "❌ รูปลายเซ็น (base64) ไม่ถูกต้อง"; exit 1; }
+
+  # ตรวจลายเซ็น
+  if ! openssl dgst -sha256 -verify "$PUBKEY_PATH" -signature "$PAYLOAD_SIG" "$PAYLOAD_JSON" >/dev/null 2>&1; then
+    echo "❌ ลายเซ็นไม่ผ่าน"; exit 1
+  fi
+
+  # อ่านข้อมูลใบอนุญาต
+  local L_KEY L_IP L_EXP L_MAX NOW MYIP
+  L_KEY="$(jq -r '.key // .id' "$PAYLOAD_JSON")"
+  L_IP="$(jq -r '.ip   // empty' "$PAYLOAD_JSON")"
+  L_EXP="$(jq -r '.exp           ' "$PAYLOAD_JSON")"
+  L_MAX="$(jq -r '.max // 2500   ' "$PAYLOAD_JSON")"
+
+  NOW=$(date +%s)
+  MYIP=$(sysip)
+
+  [[ "$L_KEY" == "$KEY" ]] || { echo "❌ คีย์ไม่ตรงกับไฟล์"; exit 1; }
+  (( NOW <= L_EXP ))       || { echo "❌ คีย์หมดอายุแล้ว"; exit 1; }
+  # ถ้าคีย์ไม่ได้ผูก IP ก็ไม่บังคับ
+  if [[ -n "$L_IP" && "$L_IP" != "$MYIP" ]]; then
+    echo "❌ IP เครื่องนี้ ($MYIP) ไม่ตรงกับใบอนุญาต ($L_IP)"; exit 1
+  fi
+
+  jq -n --arg key "$L_KEY" --arg ip "$L_IP" --argjson exp "$L_EXP" --argjson max "$L_MAX" \
+        '{key:$key, ip:$ip, exp:$exp, max:$max}' > "$CACHE_TOKEN"
+  export LICENSED_MAX="$L_MAX"
+  echo "✅ คีย์ถูกต้อง (หมดอายุ: $(date -d @${L_EXP} +%F))  IP: ${L_IP:-'-'}  Max: $L_MAX"
+}
+
+read_cached_license(){
+  if [[ -s "$CACHE_TOKEN" ]]; then
+    L_KEY=$(jq -r '.key' "$CACHE_TOKEN" 2>/dev/null || echo "-")
+    L_EXP=$(jq -r '.exp' "$CACHE_TOKEN" 2>/dev/null || echo "0")
+    L_MAX=$(jq -r '.max // 2500' "$CACHE_TOKEN" 2>/dev/null || echo "2500")
+  else
+    L_KEY="-" ; L_EXP=0 ; L_MAX=2500
+  fi
+}
+
 header(){
   read_cached_license
   local exp_str now dleft; now=$(date +%s)
-  if (( L_EXP>0 )); then dleft=$(( (L_EXP-now+86399)/86400 )); (( dleft<0 )) && dleft=0; exp_str="$(date -d @${L_EXP} +%F) (เหลือ ${dleft} วัน)"
-  else exp_str="-"; fi
+  if (( L_EXP>0 )); then
+    dleft=$(( (L_EXP-now+86399)/86400 )); (( dleft<0 )) && dleft=0
+    exp_str="$(date -d @${L_EXP} +%F) (เหลือ ${dleft} วัน)"
+  else
+    exp_str="-"
+  fi
   clear
   echo "============================================================"
   echo " PlusX – ระบบจัดการเซิร์ฟเวอร์      IP: $(sysip)"
@@ -397,11 +462,31 @@ show_reboot_status(){
   fi
 }
 backup_config(){
-  local ts bk tmp; ts=$(date +%F_%H%M%S); bk="$BK_DIR/plusx-backup_${ts}.tar.gz"; tmp=$(mktemp)
-  for d in /etc/openvpn /etc/xray /etc/caddy /etc/stunnel /etc/squid /etc/3proxy /etc/ssh /etc/systemd/system; do [[ -d "$d" ]] && echo "$d" >> "$tmp"; done
-  [[ -f /etc/systemd/system/plusx-reboot.service ]] && echo "/etc/systemd/system/plusx-reboot.service" >> "$tmp"
-  [[ -f /etc/systemd/system/plusx-reboot.timer"  ]] && echo "/etc/systemd/system/plusx-reboot.timer"  >> "$tmp"
-  if [[ -s "$tmp" ]]; then tar -czpf "$bk" -T "$tmp" && echo "✔ สำรอง: $bk"; else echo "ℹ️ ไม่มีคอนฟิกจะสำรอง"; fi
+  local ts bk tmp
+  ts=$(date +%F_%H%M%S)
+  bk="$BK_DIR/plusx-backup_${ts}.tar"
+  tmp="$(mktemp)"
+
+  # เก็บไดเรกทอรีหลัก ๆ
+  for d in /etc/openvpn /etc/xray /etc/caddy /etc/stunnel /etc/squid /etc/ssh /etc/systemd/system; do
+    if [ -d "$d" ]; then
+      printf '"%s"\n' "$d" >> "$tmp"
+    fi
+  done
+
+  # เก็บ service/timer ถ้ามี
+  for svc in /etc/systemd/system/plusx-reboot.service /etc/systemd/system/plusx-reboot.timer; do
+    if [ -f "$svc" ]; then
+      printf '"%s"\n' "$svc" >> "$tmp"
+    fi
+  done
+
+  # สร้าง tar จากรายการไฟล์/โฟลเดอร์ที่รวบรวมไว้
+  if tar -cpf "$bk" -T "$tmp"; then
+    echo "# บันทึก: $bk"
+  else
+    echo "❌ สร้างไฟล์แบ็กอัพไม่สำเร็จ"
+  fi
   rm -f "$tmp"
 }
 restore_config(){ read -rp "พาธไฟล์ .tar.gz: " f; [[ -f "$f" ]] || { echo "ไม่พบไฟล์"; return; }; tar -xzpf "$f" -C /; systemctl daemon-reload; echo "✔ กู้คืนแล้ว"; }

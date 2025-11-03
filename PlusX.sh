@@ -12,9 +12,10 @@
 set -Eeuo pipefail
 
 #====================[ ปรับค่าได้ ]====================
-LICENSE_BASE="http://thwed-key.bnetray.online/licenses"
-PUBKEY_URL="http://thwed-key.bnetray.online/license_pub.pem"
+LICENSE_BASE="https://thwed-key.bnetray.online/licenses"   # ที่เก็บไฟล์ .lic (ไม่มี / ท้าย)
+PUBKEY_URL="https://thwed-key.bnetray.online/license_pub.pem"  # public key สำหรับ verify
 LEGACY_BIN="${LEGACY_BIN:-/usr/local/bin/plusx_legacy.sh}"
+
 
 
 

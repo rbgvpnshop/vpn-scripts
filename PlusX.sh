@@ -17,6 +17,7 @@ PUBKEY_URL="https://thwed-key.bnetray.online/license_pub.pem"
 LEGACY_BIN="${LEGACY_BIN:-/usr/local/bin/plusx_legacy.sh}"
 
 
+
 # OVPN / PKI
 OVPN_ENV="${OVPN_ENV:-/etc/plusx/ovpn.env}"
 EASYRSA_DIR="${EASYRSA_DIR:-/etc/easy-rsa}"

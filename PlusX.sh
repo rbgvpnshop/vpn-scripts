@@ -12,8 +12,8 @@
 set -Eeuo pipefail
 
 #====================[ ปรับค่าได้ ]====================
-LICENSE_BASE="https://thwed-key.bnetray.online/licenses"
-PUBKEY_URL="https://thwed-key.bnetray.online/license_pub.pem"
+LICENSE_BASE="http://thwed-key.bnetray.online/licenses"
+PUBKEY_URL="http://thwed-key.bnetray.online/license_pub.pem"
 LEGACY_BIN="${LEGACY_BIN:-/usr/local/bin/plusx_legacy.sh}"
 
 
